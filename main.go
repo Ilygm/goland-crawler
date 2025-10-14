@@ -22,14 +22,15 @@ const (
 )
 
 var (
-	URLtoFilename  func(string) string
-	totalCounter   uint32 = 0
-	okCounter      uint32 = 0
-	failCounter    uint32 = 0
-	garbageCounter uint32 = 0
-	client         *http.Client
-	safeSet        *helpers.SafeSet
-	queue          chan string
+	URLtoFilename    func(string) string
+	totalCounter     uint32 = 0
+	okCounter        uint32 = 0
+	failCounter      uint32 = 0
+	garbageCounter   uint32 = 0
+	duplicateCounter uint32 = 0
+	client           *http.Client
+	safeSet          *helpers.SafeSet
+	queue            chan string
 )
 
 func init() {
@@ -51,6 +52,8 @@ func init() {
 }
 
 func main() {
+	initialTime := time.Now()
+
 	if _, err := os.Stat("./sites"); os.IsNotExist(err) {
 		os.Mkdir("./sites", 0755)
 	}
@@ -95,6 +98,8 @@ func main() {
 						goto startLabel
 					}
 					break
+				} else if okCounter > 11000 {
+					break
 				}
 			}
 			waiter.Done()
@@ -104,11 +109,14 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(time.Second * 3)
 		for range ticker.C {
-			fmt.Printf("TOTAL PARSED URLS: %6d | TOTAL OK URLs: %6d | TOTAL FAILED URLS: %6d | TOTAL GARBAGE URLS: %6d \n", totalCounter, okCounter, failCounter, garbageCounter)
+			fmt.Printf("CURRENT PARSED URLS: %6d | CURRENT OK URLs: %6d | CURRENT FAILED URLS: %6d | CURRENT GARBAGE URLS: %6d | CURRENT duplicate URLs: %6d \n",
+				totalCounter, okCounter, failCounter, garbageCounter, duplicateCounter)
 		}
 	}()
 	waiter.Wait()
-	fmt.Println("ALL DONE")
+	fmt.Println("ALL DONE TOTAL TIME:", time.Since(initialTime).String())
+	fmt.Printf("TOTAL PARSED URLS: %6d | TOTAL OK URLs: %6d | TOTAL FAILED URLS: %6d | TOTAL GARBAGE URLS: %6d | Total duplicate URLs: %6d | REMAINING SIZE IN QUEUE: %6d\n",
+		totalCounter, okCounter, failCounter, garbageCounter, duplicateCounter, len(queue))
 }
 
 func StartParser(file *os.File) {
@@ -130,6 +138,8 @@ func chainParser(node *html.Node) {
 					if ok := safeSet.AddIfNotExists(data); ok {
 						totalCounter++
 						queue <- data
+					} else {
+						duplicateCounter++
 					}
 				}
 			}
