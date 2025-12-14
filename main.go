@@ -105,11 +105,13 @@ func main() {
 				}
 				return page, pageSize, query
 			}
-
-			http.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
-				page, size, query := validate_query(w, r)
-				if query != "" {
-					internal.SearchIndexHandler(es, w, query, internal.PersianSearchQuery(query), page, size, false)
+			http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				data, err := os.ReadFile("./internal/ui.html")
+				if err == nil {
+					w.Header().Set("Content-Type", "text/html")
+					w.Write(data)
+				} else {
+					log.Println("Failed to load html", err)
 				}
 			})
 			http.HandleFunc("/correction", func(w http.ResponseWriter, r *http.Request) {
@@ -124,11 +126,8 @@ func main() {
 					internal.SearchIndexHandler(es, w, query, internal.PersianAutocompleteSuggest(query), page, size, true)
 				}
 			})
-			fmt.Println("Server running on http://localhost:8080. Query example: /search?q=Yazd+uni")
 			log.Fatal(http.ListenAndServe(":8080", nil))
 		}
-	case "tui":
-		internal.StartTUI()
 	default:
 		fmt.Println("Invalid mode. Use 'crawl', 'fix', 'index', or 'server'.")
 	}

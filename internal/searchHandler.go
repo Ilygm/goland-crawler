@@ -7,10 +7,23 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
 )
+
+func sliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
 
 func SearchIndexHandler(
 	es *elasticsearch.Client,
@@ -32,8 +45,8 @@ func SearchIndexHandler(
 		es.Search.WithIndex("html-indexer"),
 		es.Search.WithBody(&buf),
 		es.Search.WithTrackTotalHits(true),
-		es.Search.WithSize(pageSize), // Added for pagination
-		es.Search.WithFrom(from),     // Added for pagination
+		es.Search.WithSize(pageSize),
+		es.Search.WithFrom(from),
 	)
 	if err != nil {
 		http.Error(w, "Search failed: "+err.Error(), http.StatusInternalServerError)
@@ -59,32 +72,72 @@ func SearchIndexHandler(
 
 	if isAutocomplete {
 		// ---------- AUTOCOMPLETE ----------
-		suggest, ok := raw["suggest"].(map[string]any)
+		hitsI, ok := raw["hits"]
 		if !ok {
-			http.Error(w, "No suggest in response", http.StatusInternalServerError)
+			http.Error(w, "No hits in response", http.StatusInternalServerError)
 			return
 		}
-		var results []map[string]string
-		for _, suggester := range []string{"title-suggest", "h1-suggest"} {
-			if sugg, ok := suggest[suggester]; ok {
-				suggArr, ok := sugg.([]any)
-				if !ok || len(suggArr) == 0 {
-					continue
-				}
-				opts, ok := suggArr[0].(map[string]any)["options"].([]any)
+		hits, ok := hitsI.(map[string]any)
+		if !ok {
+			http.Error(w, "Invalid hits format", http.StatusInternalServerError)
+			return
+		}
+		hitsArr, ok := hits["hits"].([]any)
+		if !ok {
+			http.Error(w, "Invalid hits array", http.StatusInternalServerError)
+			return
+		}
+		var results []map[string]any
+		queryTokens := strings.Fields(query)
+		normQueryTokens := make([]string, len(queryTokens))
+		for i, t := range queryTokens {
+			normQueryTokens[i] = helpers.NormalizePersian(strings.ToLower(t))
+		}
+		var lastPrefix string
+		var prefixTokens []string
+		if len(queryTokens) > 0 {
+			lastPrefix = queryTokens[len(queryTokens)-1]
+			prefixTokens = queryTokens[:len(queryTokens)-1]
+			normLastPrefix := normQueryTokens[len(normQueryTokens)-1]
+			normPrefixTokens := normQueryTokens[:len(normQueryTokens)-1]
+			for _, h := range hitsArr {
+				hMap, ok := h.(map[string]any)
 				if !ok {
 					continue
 				}
-				for _, o := range opts {
-					optMap, ok := o.(map[string]any)
-					if !ok {
-						continue
-					}
-					text, ok := optMap["text"].(string)
-					if ok {
-						results = append(results, map[string]string{"title": text})
-					}
+				src, ok := hMap["_source"].(map[string]any)
+				if !ok {
+					continue
 				}
+				title, ok := src["title"].(string)
+				if !ok {
+					continue
+				}
+				titleTokens := strings.Fields(title)
+				normTitleTokens := make([]string, len(titleTokens))
+				for i, t := range titleTokens {
+					normTitleTokens[i] = helpers.NormalizePersian(strings.ToLower(t))
+				}
+				if len(titleTokens) <= len(prefixTokens) {
+					continue
+				}
+				if !sliceEqual(normPrefixTokens, normTitleTokens[:len(normPrefixTokens)]) {
+					continue
+				}
+				completed := titleTokens[len(prefixTokens)]
+				normCompleted := normTitleTokens[len(normPrefixTokens)]
+				if !strings.HasPrefix(normCompleted, normLastPrefix) {
+					continue
+				}
+				prefixRunes := []rune(lastPrefix)
+				completedRunes := []rune(completed)
+				suffixRunes := completedRunes[len(prefixRunes):]
+				suffix := string(suffixRunes)
+				results = append(results, map[string]any{
+					"title":  title,
+					"url":    src["url"],
+					"suffix": suffix,
+				})
 			}
 		}
 		response["results"] = results
@@ -135,14 +188,76 @@ func SearchIndexHandler(
 		if !ok {
 			continue
 		}
-		results = append(results, map[string]any{
+		result := map[string]any{
 			"title": src["title"],
 			"url":   src["url"],
-		})
+		}
+		if score, ok := hMap["_score"].(float64); ok {
+			result["score"] = score
+		}
+		results = append(results, result)
 	}
 
 	response["total_hits"] = total
 	response["results"] = results
+
+	// Run correction suggest
+	var suggestBuf bytes.Buffer
+	suggestMap := PersianKeywordCorrection(query)
+	if err := json.NewEncoder(&suggestBuf).Encode(suggestMap); err != nil {
+		http.Error(w, "Error encoding suggest", http.StatusInternalServerError)
+		return
+	}
+	suggestRes, err := es.Search(
+		es.Search.WithContext(context.Background()),
+		es.Search.WithIndex("html-indexer"),
+		es.Search.WithBody(&suggestBuf),
+	)
+	if err != nil {
+		// Silent fail for suggest
+		writeJSON(w, response)
+		return
+	}
+	defer suggestRes.Body.Close()
+	if suggestRes.IsError() {
+		writeJSON(w, response)
+		return
+	}
+	var rawSuggest map[string]any
+	if err := json.NewDecoder(suggestRes.Body).Decode(&rawSuggest); err != nil {
+		writeJSON(w, response)
+		return
+	}
+	suggest, ok := rawSuggest["suggest"].(map[string]any)
+	if !ok {
+		writeJSON(w, response)
+		return
+	}
+	textSuggest, ok := suggest["text-suggest"].([]any)
+	if !ok || len(textSuggest) == 0 {
+		writeJSON(w, response)
+		return
+	}
+	options, ok := textSuggest[0].(map[string]any)["options"].([]any)
+	if !ok || len(options) == 0 {
+		writeJSON(w, response)
+		return
+	}
+	var suggestions []string
+	for _, opt := range options {
+		optMap, ok := opt.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := optMap["text"].(string); ok && text != helpers.NormalizePersian(query) {
+			suggestions = append(suggestions, text)
+		}
+	}
+	if len(suggestions) > 0 {
+		response["problem"] = "Did you mean:"
+		response["suggestions"] = suggestions
+	}
+
 	writeJSON(w, response)
 }
 

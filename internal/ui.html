@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="fa">
+<head>
+    <meta charset="UTF-8">
+    <title>جستجو</title>
+    <style>
+        body { font-family: sans-serif; direction: rtl; text-align: right; margin: 20px; }
+        #search-input { width: 50%; padding: 10px; font-size: 16px; }
+        #suggestions { list-style: none; padding: 0; margin: 0; border: 1px solid #ccc; display: none; }
+        #suggestions li { padding: 10px; cursor: pointer; }
+        #suggestions li:hover { background: #f0f0f0; }
+        #info { margin: 20px 0; font-weight: bold; }
+        #did-you-mean { color: red; }
+        #results { list-style: none; padding: 0; }
+        #results li { margin: 10px 0; }
+        #pagination a { margin: 5px; text-decoration: none; }
+        #pagination a.current { font-weight: bold; }
+    </style>
+</head>
+<body>
+    <input id="search-input" type="text" placeholder="جستجو...">
+    <ul id="suggestions"></ul>
+    <div id="info"></div>
+    <div id="did-you-mean"></div>
+    <ul id="results"></ul>
+    <div id="pagination"></div>
+
+    <script>
+        const input = document.getElementById('search-input');
+        const suggestionsList = document.getElementById('suggestions');
+        const info = document.getElementById('info');
+        const didYouMean = document.getElementById('did-you-mean');
+        const resultsList = document.getElementById('results');
+        const pagination = document.getElementById('pagination');
+        let currentQuery = '';
+        let currentPage = 1;
+        const pageSize = 10;
+
+        input.addEventListener('input', debounce(handleAutocomplete, 300));
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') handleSearch(1);
+        });
+
+        function debounce(fn, delay) {
+            let timeout;
+            return (...args) => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => fn(...args), delay);
+            };
+        }
+
+        async function handleAutocomplete() {
+            const q = input.value.trim();
+            suggestionsList.style.display = 'none';
+            suggestionsList.innerHTML = '';
+            if (q.length < 3) return;
+            const res = await fetch(`/autocomplete?q=${encodeURIComponent(q)}`);
+            const data = await res.json();
+            if (data.results && data.results.length > 0) {
+                suggestionsList.style.display = 'block';
+                data.results.forEach(r => {
+                    const li = document.createElement('li');
+                    li.textContent = r.title;
+                    li.addEventListener('click', () => {
+                        input.value = r.title;
+                        suggestionsList.style.display = 'none';
+                        handleSearch(1);
+                    });
+                    suggestionsList.appendChild(li);
+                });
+            }
+        }
+
+        async function handleSearch(page) {
+            currentQuery = input.value.trim();
+            if (!currentQuery) return;
+            currentPage = page;
+            const res = await fetch(`/search?q=${encodeURIComponent(currentQuery)}&page=${page}`);
+            const data = await res.json();
+            info.textContent = `نتایج برای "${currentQuery}" (${data.total_hits} نتیجه) - زمان: ${data.time_taken}`;
+            didYouMean.innerHTML = '';
+            if (data.problem && data.suggestions) {
+                didYouMean.textContent = `${data.problem} `;
+                data.suggestions.forEach(s => {
+                    const a = document.createElement('a');
+                    a.href = '#';
+                    a.textContent = s + ' ';
+                    a.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        input.value = s;
+                        handleSearch(1);
+                    });
+                    didYouMean.appendChild(a);
+                });
+            }
+            resultsList.innerHTML = '';
+            data.results.forEach(r => {
+                const li = document.createElement('li');
+                const a = document.createElement('a');
+                a.href = r.url;
+                a.textContent = r.title;
+                li.appendChild(a);
+                li.append(` (امتیاز: ${r.score.toFixed(2)})`);
+                resultsList.appendChild(li);
+            });
+            pagination.innerHTML = '';
+            const totalPages = Math.ceil(data.total_hits / pageSize);
+            for (let p = 1; p <= totalPages; p++) {
+                const a = document.createElement('a');
+                a.href = '#';
+                a.textContent = p;
+                a.className = p === currentPage ? 'current' : '';
+                a.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    handleSearch(p);
+                });
+                pagination.appendChild(a);
+            }
+        }
+    </script>
+</body>
+</html>
