@@ -1,151 +1,164 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/base32"
+	"bytes"
+	"context"
+	"crawler/internal"
+	"crypto/tls"
+	"encoding/json"
+	"flag"
 	"fmt"
-	"io"
+	"log"
 	"net/http"
 	"os"
-	"strings"
-	"sync"
-	"time"
+	"strconv"
 
-	"golang.crawler/helpers"
-	"golang.org/x/net/html"
+	"github.com/elastic/go-elasticsearch/v8"
+	"github.com/joho/godotenv"
 )
-
-const (
-	SafeSetBaseSize int = 11_000
-	MaxUrlCrawl     int = 11_000
-	CrawlerCount    int = 25
-)
-
-var (
-	URLtoFilename    func(string) string
-	totalCounter     uint32 = 0
-	okCounter        uint32 = 0
-	failCounter      uint32 = 0
-	garbageCounter   uint32 = 0
-	duplicateCounter uint32 = 0
-	client           *http.Client
-	safeSet          *helpers.SafeSet
-	queue            chan string
-)
-
-func init() {
-	queue = make(chan string, 11_000)
-	safeSet = helpers.NewSafeSet(11_000)
-
-	base32Encoder := *base32.StdEncoding.WithPadding(base32.NoPadding)
-	URLtoFilename = func(url string) string {
-		hashed := sha256.Sum256([]byte(url))
-		return base32Encoder.EncodeToString(hashed[:]) + ".html"
-	}
-
-	client = &http.Client{
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-		},
-		Timeout: 5 * time.Second,
-	}
-}
 
 func main() {
-	initialTime := time.Now()
+	modeArg := flag.String("mode", "server", "Crawler mode that the program should run in")
+	testIndex := flag.Bool("test", false, "Test indexes but compile time values")
+	flag.Parse()
+	godotenv.Load(".env")
 
-	if _, err := os.Stat("./sites"); os.IsNotExist(err) {
-		os.Mkdir("./sites", 0755)
-	}
-	queue <- "https://barbadpiano.com/"
-	waiter := sync.WaitGroup{}
-	for range CrawlerCount {
-		waiter.Add(1)
-		go func() {
-		startLabel:
-			for url := range queue {
-				filename := "./sites/" + URLtoFilename(url)
-				if _, err := os.Stat(filename); os.IsNotExist(err) {
-					resp, err := client.Get(url)
-					startTIme := time.Now()
-					if err != nil || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-						garbageCounter++
-						continue
-					} else {
-						okCounter++
-					}
-					file, fileErr := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0755)
-					if fileErr != nil {
-						fmt.Println("Could not open file for storing", url)
-						continue
-					}
-					data, _ := io.ReadAll(resp.Body)
-					file.Write(data)
-					file.Seek(0, 0)
-					resp.Body.Close()
-					StartParser(file)
-					file.Close()
-					time.Sleep(10 - time.Duration(time.Since(startTIme).Seconds()))
-				} else {
-					file, _ := os.OpenFile(filename, os.O_RDONLY, 0755)
-					okCounter++
-					StartParser(file)
-					file.Close()
-				}
-				if len(queue) == 0 {
-					time.Sleep(time.Second * 3)
-					if len(queue) != 0 {
-						goto startLabel
-					}
-					break
-				} else if okCounter > 11000 {
-					break
-				}
-			}
-			waiter.Done()
-		}()
-	}
-	fmt.Println("NOW WAITING")
-	go func() {
-		ticker := time.NewTicker(time.Second * 3)
-		for range ticker.C {
-			fmt.Printf("CURRENT PARSED URLS: %6d | CURRENT OK URLs: %6d | CURRENT FAILED URLS: %6d | CURRENT GARBAGE URLS: %6d | CURRENT duplicate URLs: %6d \n",
-				totalCounter, okCounter, failCounter, garbageCounter, duplicateCounter)
+	// 1. Initialize ES Client with Configuration
+	// Elasticsearch is configured with SSL/TLS and requires authentication
+	// Get credentials from environment variables or use defaults
+	var es *elasticsearch.Client
+	if *modeArg == "index" || *modeArg == "server" {
+		esUser := os.Getenv("ELASTIC_USER")
+		if esUser == "" {
+			esUser = "elastic" // Default username
 		}
-	}()
-	waiter.Wait()
-	fmt.Println("ALL DONE TOTAL TIME:", time.Since(initialTime).String())
-	fmt.Printf("TOTAL PARSED URLS: %6d | TOTAL OK URLs: %6d | TOTAL FAILED URLS: %6d | TOTAL GARBAGE URLS: %6d | Total duplicate URLs: %6d | REMAINING SIZE IN QUEUE: %6d\n",
-		totalCounter, okCounter, failCounter, garbageCounter, duplicateCounter, len(queue))
+		esPassword := os.Getenv("ELASTIC_PASSWORD")
+		if esPassword == "" {
+			log.Fatal("ELASTIC_PASSWORD environment variable is required. Set it to the password from your .env file or docker-compose setup.")
+		}
+		cfg := elasticsearch.Config{
+			Addresses:      []string{"https://localhost:9200"},
+			PoolCompressor: true,
+			Username:       esUser,
+			Password:       esPassword,
+			// Skip certificate verification for localhost (use CA cert in production)
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true, // Only for localhost development
+				},
+			},
+		}
+		var err error
+		es, err = elasticsearch.NewClient(cfg)
+		if err != nil {
+			log.Fatalf("Error creating the Elasticsearch client: %s", err)
+		}
+		// Test the connection to Elasticsearch
+		res, err := es.Info()
+		if err != nil {
+			log.Fatalf("Error getting response from Elasticsearch: %s", err)
+		}
+		defer res.Body.Close()
+		if res.IsError() {
+			log.Fatalf("Elasticsearch client connection failed: %s", res.String())
+		} else {
+			log.Println("Successfully connected to Elasticsearch.")
+		}
+	}
+
+	switch *modeArg {
+	case "crawl":
+		internal.StartDownloader()
+	case "fix":
+		// Fix mode: Re-parse all HTML files and regenerate JSON files with proper encoding
+		internal.FixJSONFiles("./site")
+	case "index":
+		internal.StartIndexing(es, "./site")
+	case "server":
+		if *testIndex {
+			testQuerySearch(es, internal.PersianKeywordCorrection("گیتار"))
+			testQuerySearch(es, internal.PersianSearchQuery("گیت"))
+		} else {
+			validate_query := func(w http.ResponseWriter, r *http.Request) (int, int, string) {
+				query := r.URL.Query().Get("q")
+				pageStr := r.URL.Query().Get("page")
+				sizeStr := r.URL.Query().Get("pageSize")
+				page := 1
+				pageSize := 10
+				if pageStr != "" {
+					var err error
+					page, err = strconv.Atoi(pageStr)
+					if err != nil || page < 1 {
+						page = 1
+					}
+				}
+				if sizeStr != "" {
+					var err error
+					pageSize, err = strconv.Atoi(sizeStr)
+					if err != nil || page < 1 {
+						page = 1
+					}
+				}
+				if query == "" {
+					http.Error(w, "Query parameter 'q' is missing", http.StatusBadRequest)
+					return 1, 1, ""
+				}
+				return page, pageSize, query
+			}
+
+			http.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+				page, size, query := validate_query(w, r)
+				if query != "" {
+					internal.SearchIndexHandler(es, w, query, internal.PersianSearchQuery(query), page, size, false)
+				}
+			})
+			http.HandleFunc("/correction", func(w http.ResponseWriter, r *http.Request) {
+				page, size, query := validate_query(w, r)
+				if query != "" {
+					internal.SearchIndexHandler(es, w, query, internal.PersianKeywordCorrection(query), page, size, false)
+				}
+			})
+			http.HandleFunc("/autocomplete", func(w http.ResponseWriter, r *http.Request) {
+				page, size, query := validate_query(w, r)
+				if query != "" {
+					internal.SearchIndexHandler(es, w, query, internal.PersianAutocompleteSuggest(query), page, size, true)
+				}
+			})
+			fmt.Println("Server running on http://localhost:8080. Query example: /search?q=Yazd+uni")
+			log.Fatal(http.ListenAndServe(":8080", nil))
+		}
+	case "tui":
+		internal.StartTUI()
+	default:
+		fmt.Println("Invalid mode. Use 'crawl', 'fix', 'index', or 'server'.")
+	}
 }
 
-func StartParser(file *os.File) {
-	rootNode, err := html.Parse(file)
+func testQuerySearch(es *elasticsearch.Client, query map[string]any) {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+		log.Fatalf("Error encoding query: %s", err)
+	}
+	res, err := es.Search(
+		es.Search.WithContext(context.Background()),
+		es.Search.WithIndex("_all"),
+		es.Search.WithBody(&buf),
+		es.Search.WithTrackTotalHits(true),
+	)
 	if err != nil {
-		fmt.Printf("BIG ERROR: %s\nFilename: %s\n", err.Error(), file.Name())
-		file.Close()
-		failCounter++
+		log.Fatalf("Search failed: %s", err)
 	}
-	chainParser(rootNode)
-}
+	defer res.Body.Close()
 
-func chainParser(node *html.Node) {
-	if node.Type == html.ElementNode && node.Data == "a" {
-		for _, attr := range node.Attr {
-			if attr.Key == "href" {
-				data := strings.Split(strings.TrimSpace(attr.Val), "#")[0]
-				if strings.HasPrefix(data, "https://") && strings.Contains(data, "barbadpiano.com") {
-					if ok := safeSet.AddIfNotExists(data); ok {
-						totalCounter++
-						queue <- data
-					} else {
-						duplicateCounter++
-					}
-				}
-			}
-		}
+	var result map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
+		log.Fatalf("Failed to decode response: %s", err)
 	}
-	for c := node.FirstChild; c != nil; c = c.NextSibling {
-		chainParser(c)
+
+	hits := result["hits"].(map[string]any)["hits"].([]any)
+	fmt.Printf("Query: %s | Found %d results\n", query, len(hits))
+	for _, hit := range hits {
+		source := hit.(map[string]any)["_source"].(map[string]any)
+		fmt.Println("Title:", source["title"], "| URL:", source["url"])
 	}
 }
