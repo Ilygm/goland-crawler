@@ -209,6 +209,7 @@ func StartIndexing(es *elasticsearch.Client, dataDir string) {
 		count++
 
 		if count >= batchSize {
+			log.Printf("Indexed %d documents in %s", count, time.Since(startTime))
 			flushBulk(es, &bulkReq, ctx)
 			bulkReq.Reset()
 			count = 0

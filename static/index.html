@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yazd University Search Engine</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="header">
+    <h1>جستجوگر یزدجو</h1>
+    <p>موتور جستجوی داخلی دانشگاه یزد</p>
+</div>
+
+<div class="search-container">
+    <form id="search-form" class="search-box-wrapper">
+        <input type="text" id="search-input" name="q" placeholder="عبارت جستجوی خود را وارد کنید..." autocomplete="off">
+        <button type="submit">جستجو</button>
+    </form>
+    <ul id="suggestions-container" class="suggestions-dropdown"></ul>
+</div>
+
+<div id="status-area" class="status-message"></div>
+
+<div id="results-area" class="results-grid"></div>
+
+<script src="/static/script.js"></script>
+</body>
+</html>

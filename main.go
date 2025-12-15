@@ -106,7 +106,7 @@ func main() {
 				return page, pageSize, query
 			}
 			http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-				data, err := os.ReadFile("./internal/ui.html")
+				data, err := os.ReadFile("./static/index.html")
 				if err == nil {
 					w.Header().Set("Content-Type", "text/html")
 					w.Write(data)
@@ -114,6 +114,9 @@ func main() {
 					log.Println("Failed to load html", err)
 				}
 			})
+
+			http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
+
 			http.HandleFunc("/correction", func(w http.ResponseWriter, r *http.Request) {
 				page, size, query := validate_query(w, r)
 				if query != "" {
