@@ -172,3 +172,31 @@ body {
     color: #70757a;
     margin-top: 50px;
 }
+
+.pagination {
+    max-width: 600px;
+    margin: 10px auto 40px;
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+}
+
+.pagination button {
+    border: 1px solid var(--border-color);
+    background-color: #fff;
+    padding: 4px 10px;
+    border-radius: 16px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.pagination button.active {
+    background-color: var(--primary-color);
+    color: #fff;
+    border-color: var(--primary-color);
+}
+
+.pagination button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}

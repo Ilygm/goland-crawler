@@ -131,9 +131,9 @@ func main() {
 				}
 			})
 			http.HandleFunc("/correction", func(w http.ResponseWriter, r *http.Request) {
-				page, size, query := validate_query(w, r)
+				_, _, query := validate_query(w, r)
 				if query != "" {
-					internal.SearchIndexHandler(es, w, query, internal.PersianKeywordCorrection(query), page, size, false)
+					internal.CorrectionOnlyHandler(es, w, query)
 				}
 			})
 			http.HandleFunc("/autocomplete", func(w http.ResponseWriter, r *http.Request) {

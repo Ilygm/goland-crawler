@@ -3,15 +3,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchForm = document.getElementById('search-form');
     const statusArea = document.getElementById('status-area');
     const resultsArea = document.getElementById('results-area');
+    const pagination = document.getElementById('pagination');
     const suggestionsContainer = document.getElementById('suggestions-container');
 
     const API_BASE_URL = window.location.origin;
     let selectedSuggestionIndex = -1;
+    const PAGE_SIZE = 10;
+    let currentPage = 1;
+    let currentQuery = '';
 
     // --- Utility: Debounce ---
     function debounce(func, delay) {
         let timeout;
-        return function(...args) {
+        return function (...args) {
             clearTimeout(timeout);
             timeout = setTimeout(() => func.apply(this, args), delay);
         };
@@ -98,15 +102,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Search Logic ---
-    async function performSearch(query) {
+    async function performSearch(query, page = 1) {
         if (!query.trim()) return;
+
+        currentQuery = query;
+        currentPage = page;
 
         closeSuggestions();
         resultsArea.innerHTML = '';
         statusArea.innerHTML = '<span style="color: var(--primary-color);">در حال جستجو...</span>';
 
         try {
-            const url = `${API_BASE_URL}/search?q=${encodeURIComponent(query)}&page=1&size=10`;
+            const url = `${API_BASE_URL}/search?q=${encodeURIComponent(query)}&page=${page}&size=${PAGE_SIZE}`;
             const response = await fetch(url);
             const data = await response.json();
             renderResults(data);
@@ -118,7 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     searchForm.addEventListener('submit', (e) => {
         e.preventDefault();
-        performSearch(searchInput.value);
+        performSearch(searchInput.value, 1);
     });
 
     searchInput.addEventListener('input', debounce((e) => {
@@ -173,7 +180,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 card.classList.add('result-card');
                 card.innerHTML = `
                     <h2><a href="${url}" target="_blank">${title}</a></h2>
-                    <span class="result-url">${url !== '#' ? url : ''}</span>
+                    <span style="text-align: left; direction: ltr;" class="result-url">${url !== '#' ? url : ''}</span>
                     ${score !== null ? `<div class="result-meta">امتیاز: ${score}</div>` : ''}
                 `;
                 resultsArea.appendChild(card);
@@ -181,5 +188,49 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             resultsArea.innerHTML = '<p class="no-results">نتیجه‌ای یافت نشد.</p>';
         }
+
+        renderPagination(totalHits);
+    }
+
+    function renderPagination(totalHits) {
+        pagination.innerHTML = '';
+
+        const totalPages = Math.ceil(totalHits / PAGE_SIZE);
+        if (totalPages <= 1) {
+            return;
+        }
+
+        const createButton = (label, page, disabled = false, isActive = false) => {
+            const btn = document.createElement('button');
+            btn.textContent = label;
+            btn.disabled = disabled;
+            if (isActive) {
+                btn.classList.add('active');
+            }
+            btn.addEventListener('click', () => {
+                if (!disabled && page !== currentPage) {
+                    performSearch(currentQuery, page);
+                }
+            });
+            return btn;
+        };
+
+        // Previous
+        pagination.appendChild(createButton('قبلی', currentPage - 1, currentPage === 1));
+
+        // Page numbers (simple window around current)
+        const maxPagesToShow = 5;
+        let start = Math.max(1, currentPage - Math.floor(maxPagesToShow / 2));
+        let end = Math.min(totalPages, start + maxPagesToShow - 1);
+        if (end - start + 1 < maxPagesToShow) {
+            start = Math.max(1, end - maxPagesToShow + 1);
+        }
+
+        for (let p = start; p <= end; p++) {
+            pagination.appendChild(createButton(p.toString(), p, false, p === currentPage));
+        }
+
+        // Next
+        pagination.appendChild(createButton('بعدی', currentPage + 1, currentPage === totalPages));
     }
 });

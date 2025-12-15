@@ -312,9 +312,10 @@ func PersianKeywordCorrection(query string) map[string]any {
 			"text-suggest": map[string]any{
 				"text": helpers.NormalizePersian(query),
 				"phrase": map[string]any{
-					"field":      "title.suggestion",
-					"max_errors": 2,
-					"confidence": 0.3,
+					"field": "title.suggestion",
+					// Be a bit more aggressive so that typos like گیزار -> گیتار are suggested
+					"max_errors": 3,
+					"confidence": 0.0,
 					"direct_generator": []map[string]any{
 						{
 							"field":        "title",
@@ -332,4 +333,80 @@ func PersianKeywordCorrection(query string) map[string]any {
 		},
 		"_source": false,
 	}
+}
+
+// CorrectionOnlyHandler runs only the phrase suggester and returns suggestions
+// without doing a full search. Useful for debugging and for a dedicated /correction API.
+func CorrectionOnlyHandler(
+	es *elasticsearch.Client,
+	w http.ResponseWriter,
+	query string,
+) {
+	start := time.Now()
+
+	var buf bytes.Buffer
+	suggestMap := PersianKeywordCorrection(query)
+	if err := json.NewEncoder(&buf).Encode(suggestMap); err != nil {
+		http.Error(w, "Error encoding suggest", http.StatusInternalServerError)
+		return
+	}
+
+	res, err := es.Search(
+		es.Search.WithContext(context.Background()),
+		es.Search.WithIndex("html-indexer"),
+		es.Search.WithBody(&buf),
+	)
+	if err != nil {
+		http.Error(w, "Correction search failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		body, _ := io.ReadAll(res.Body)
+		http.Error(w, "ES error: "+string(body), res.StatusCode)
+		return
+	}
+
+	var raw map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+		http.Error(w, "Failed to decode correction response: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]any{
+		"time_taken": time.Since(start).String(),
+	}
+
+	suggest, ok := raw["suggest"].(map[string]any)
+	if !ok {
+		writeJSON(w, response)
+		return
+	}
+	textSuggest, ok := suggest["text-suggest"].([]any)
+	if !ok || len(textSuggest) == 0 {
+		writeJSON(w, response)
+		return
+	}
+	options, ok := textSuggest[0].(map[string]any)["options"].([]any)
+	if !ok || len(options) == 0 {
+		writeJSON(w, response)
+		return
+	}
+	var suggestions []string
+	for _, opt := range options {
+		optMap, ok := opt.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text, ok := optMap["text"].(string); ok && text != helpers.NormalizePersian(query) {
+			suggestions = append(suggestions, text)
+		}
+	}
+	if len(suggestions) > 0 {
+		response["problem"] = "Did you mean:"
+		response["suggestions"] = suggestions
+	}
+
+	writeJSON(w, response)
 }
