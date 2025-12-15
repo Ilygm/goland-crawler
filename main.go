@@ -82,9 +82,16 @@ func main() {
 			validate_query := func(w http.ResponseWriter, r *http.Request) (int, int, string) {
 				query := r.URL.Query().Get("q")
 				pageStr := r.URL.Query().Get("page")
-				sizeStr := r.URL.Query().Get("pageSize")
+
+				// Support both `size` and `pageSize` as the page-size parameter
+				sizeStr := r.URL.Query().Get("size")
+				if sizeStr == "" {
+					sizeStr = r.URL.Query().Get("pageSize")
+				}
+
 				page := 1
 				pageSize := 10
+
 				if pageStr != "" {
 					var err error
 					page, err = strconv.Atoi(pageStr)
@@ -92,13 +99,15 @@ func main() {
 						page = 1
 					}
 				}
+
 				if sizeStr != "" {
 					var err error
 					pageSize, err = strconv.Atoi(sizeStr)
-					if err != nil || page < 1 {
-						page = 1
+					if err != nil || pageSize < 1 {
+						pageSize = 10
 					}
 				}
+
 				if query == "" {
 					http.Error(w, "Query parameter 'q' is missing", http.StatusBadRequest)
 					return 1, 1, ""
@@ -114,9 +123,13 @@ func main() {
 					log.Println("Failed to load html", err)
 				}
 			})
-
 			http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static"))))
-
+			http.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+				page, size, query := validate_query(w, r)
+				if query != "" {
+					internal.SearchIndexHandler(es, w, query, internal.PersianSearchQuery(query), page, size, false)
+				}
+			})
 			http.HandleFunc("/correction", func(w http.ResponseWriter, r *http.Request) {
 				page, size, query := validate_query(w, r)
 				if query != "" {
@@ -129,6 +142,7 @@ func main() {
 					internal.SearchIndexHandler(es, w, query, internal.PersianAutocompleteSuggest(query), page, size, true)
 				}
 			})
+			log.Println("Webpage is accessible from http://localhost:8080/")
 			log.Fatal(http.ListenAndServe(":8080", nil))
 		}
 	default:

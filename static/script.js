@@ -29,7 +29,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch(url);
             const data = await response.json();
 
-            renderSuggestions(data.suggestions || []);
+            // Backend returns: { time_taken, results: [{ title, url, suffix }] }
+            const results = Array.isArray(data.results) ? data.results : [];
+            const suggestions = results.map(r => {
+                const suffix = typeof r.suffix === 'string' ? r.suffix : '';
+                return query + suffix;
+            });
+
+            renderSuggestions(suggestions);
         } catch (error) {
             console.error("Autocomplete failed:", error);
         }
@@ -99,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
         statusArea.innerHTML = '<span style="color: var(--primary-color);">در حال جستجو...</span>';
 
         try {
-            const url = `${API_BASE_URL}/correction?q=${encodeURIComponent(query)}&page=1&size=10`;
+            const url = `${API_BASE_URL}/search?q=${encodeURIComponent(query)}&page=1&size=10`;
             const response = await fetch(url);
             const data = await response.json();
             renderResults(data);
@@ -129,12 +136,16 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderResults(data) {
         resultsArea.innerHTML = '';
 
-        const totalHits = data.results?.total || 0;
+        // Backend: { time_taken, total_hits, results: [{ title, url, score }], suggestions?: [] }
+        const totalHits = typeof data.total_hits === 'number' ? data.total_hits : 0;
         const time = data.time_taken || '0s';
 
         let correctionHtml = '';
-        if (data.correction && data.correction.trim().toLowerCase() !== searchInput.value.trim().toLowerCase()) {
-            correctionHtml = `<div class="correction">آیا منظور شما این بود: <button class="correction-link">${data.correction}</button></div>`;
+        const suggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+        const topSuggestion = suggestions.length > 0 ? suggestions[0] : null;
+        if (topSuggestion && topSuggestion.trim() !== '' &&
+            topSuggestion.trim().toLowerCase() !== searchInput.value.trim().toLowerCase()) {
+            correctionHtml = `<div class="correction">آیا منظور شما این بود: <button class="correction-link">${topSuggestion}</button></div>`;
         }
 
         statusArea.innerHTML = `
@@ -146,22 +157,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const corrBtn = statusArea.querySelector('.correction-link');
         if (corrBtn) {
             corrBtn.addEventListener('click', () => {
-                searchInput.value = data.correction;
-                performSearch(data.correction);
+                const corrected = corrBtn.textContent || '';
+                searchInput.value = corrected;
+                performSearch(corrected);
             });
         }
 
-        if (data.results?.hits?.length > 0) {
-            data.results.hits.forEach(hit => {
-                const doc = hit._source || {};
-                let snippet = (hit.highlight?.body ? hit.highlight.body[0] : doc.Body) || '';
+        if (Array.isArray(data.results) && data.results.length > 0) {
+            data.results.forEach(hit => {
+                const title = hit.title || 'بدون عنوان';
+                const url = hit.url || '#';
+                const score = typeof hit.score === 'number' ? hit.score.toFixed(2) : null;
 
                 const card = document.createElement('div');
                 card.classList.add('result-card');
                 card.innerHTML = `
-                    <h2><a href="${doc.URL || '#'}" target="_blank">${doc.Title || 'بدون عنوان'}</a></h2>
-                    <span class="result-url">${doc.URL || ''}</span>
-                    <p>${snippet}</p>
+                    <h2><a href="${url}" target="_blank">${title}</a></h2>
+                    <span class="result-url">${url !== '#' ? url : ''}</span>
+                    ${score !== null ? `<div class="result-meta">امتیاز: ${score}</div>` : ''}
                 `;
                 resultsArea.appendChild(card);
             });
