@@ -284,7 +284,7 @@ func PersianSearchQuery(query string) map[string]any {
 					"h4^2",
 					"h5^1.5",
 					"h6^1.2",
-					"body",
+					"body^0.8",
 				},
 			},
 		},
